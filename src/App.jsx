@@ -37,7 +37,8 @@ export default function App() {
   
   // Filter States
   const [filterDemo, setFilterDemo] = useState('')
-  const [filterStatus, setFilterStatus] = useState('')
+  const [filterOrigin, setFilterOrigin] = useState('')
+  const [selectedRatings, setSelectedRatings] = useState([])
   const [tagsList, setTagsList] = useState([])
   const [selectedTags, setSelectedTags] = useState([])
   
@@ -98,7 +99,7 @@ export default function App() {
   // Fetch manga list with filters
   useEffect(() => {
     setListOffset(0);
-  }, [searchQuery, filterDemo, filterStatus, selectedTags, settings.goonerMode]);
+  }, [searchQuery, filterDemo, filterOrigin, selectedRatings, selectedTags]);
 
   // Fetch manga list with filters
   useEffect(() => {
@@ -106,15 +107,15 @@ export default function App() {
     const get = async () => {
       setLoading(true);
       try {
-        const opts = { query: searchQuery, tags: selectedTags, offset: listOffset, goonerMode: settings.goonerMode };
+        const opts = { query: searchQuery, tags: selectedTags, offset: listOffset, contentRatings: selectedRatings };
         if (filterDemo) opts.demographic = [filterDemo];
-        if (filterStatus) opts.status = [filterStatus];
+        if (filterOrigin) opts.originalLanguage = [filterOrigin];
         setMangaList(await api.fetchMangaList(opts) || []);
       } catch(e) { setMangaList([]); }
       setLoading(false);
     };
     const t = setTimeout(get, 500); return () => clearTimeout(t);
-  }, [searchQuery, filterDemo, filterStatus, selectedTags, selectedManga, listOffset, settings.goonerMode]);
+  }, [searchQuery, filterDemo, filterOrigin, selectedRatings, selectedTags, selectedManga, listOffset]);
 
   const handleSelectManga = useCallback(async (manga) => {
     setSelectedManga(manga); setLoadingChapters(true); setChapterFetchInfo(null); setLangFilter('en');
@@ -371,6 +372,12 @@ export default function App() {
   const renderDiscover = () => (
     <>
       <div className="filters-container">
+        <select className="custom-select" value={filterOrigin} onChange={e=>setFilterOrigin(e.target.value)}>
+          <option value="">Any Origin</option>
+          <option value="ja">Manga (Japan)</option>
+          <option value="ko">Manhwa (Korea)</option>
+          <option value="zh">Manhua (China)</option>
+        </select>
         <select className="custom-select" value={filterDemo} onChange={e=>setFilterDemo(e.target.value)}>
           <option value="">Any Demographic</option>
           <option value="shounen">Shounen</option>
@@ -378,12 +385,15 @@ export default function App() {
           <option value="seinen">Seinen</option>
           <option value="josei">Josei</option>
         </select>
-        <select className="custom-select" value={filterStatus} onChange={e=>setFilterStatus(e.target.value)}>
-          <option value="">Any Status</option>
-          <option value="ongoing">Ongoing</option>
-          <option value="completed">Completed</option>
-          <option value="hiatus">Hiatus</option>
-          <option value="cancelled">Cancelled</option>
+        <select className="custom-select" onChange={e=>{
+          if(e.target.value && !selectedRatings.includes(e.target.value)) setSelectedRatings([...selectedRatings, e.target.value]);
+          e.target.value='';
+        }}>
+          <option value="">+ Add Content Filter</option>
+          <option value="safe">Safe</option>
+          <option value="suggestive">Suggestive</option>
+          <option value="erotica">Erotica</option>
+          <option value="pornographic">Pornographic</option>
         </select>
         <select className="custom-select" onChange={e=>{
           if(e.target.value && !selectedTags.includes(e.target.value)) setSelectedTags([...selectedTags, e.target.value]);
@@ -393,8 +403,13 @@ export default function App() {
           {tagsList.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
         
-        {selectedTags.length > 0 && (
+        {(selectedTags.length > 0 || selectedRatings.length > 0) && (
           <div style={{display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap', marginLeft:'12px', paddingLeft:'12px', borderLeft:'1px solid var(--border-color)'}}>
+            {selectedRatings.map(rating => (
+              <span key={rating} className="tag-chip" style={{borderColor: 'var(--accent-primary)', color: 'var(--accent-primary)'}} onClick={()=>setSelectedRatings(selectedRatings.filter(x=>x!==rating))}>
+                {rating.charAt(0).toUpperCase() + rating.slice(1)} <X size={12}/>
+              </span>
+            ))}
             {selectedTags.map(tid => {
               const tName = tagsList.find(x=>x.id===tid)?.name || tid;
               return <span key={tid} className="tag-chip" onClick={()=>setSelectedTags(selectedTags.filter(x=>x!==tid))}>{tName} <X size={12}/></span>
@@ -404,7 +419,7 @@ export default function App() {
       </div>
       
       <h2 style={{marginBottom:'32px', fontSize:'2rem', display:'flex', alignItems:'center', gap:'12px'}}>
-        {!searchQuery && selectedTags.length===0 && !filterDemo && !filterStatus ? '🔥 Trending Masterpieces' : '🔍 Exploration Results'}
+        {!searchQuery && selectedTags.length===0 && !filterDemo && !filterOrigin && selectedRatings.length===0 ? '🔥 Trending Masterpieces' : '🔍 Exploration Results'}
         {loading && <Loader2 size={28} color="var(--accent-primary)" style={{animation:'spin 1s linear infinite'}}/>}
         <button onClick={() => setListOffset(listOffset + 30)} className="btn-icon" style={{marginLeft:'auto', padding:'8px', display:'flex', alignItems:'center', justifyContent:'center'}}>
           <RefreshCw size={24}/>
@@ -548,23 +563,6 @@ export default function App() {
         </div>
       </div>
 
-      <div className="settings-panel">
-        <h3 className="settings-title">Content Filters</h3>
-        <p style={{color:'var(--text-muted)', fontSize:'0.95rem', marginBottom:'20px'}}>Adjust the types of content shown in Discover.</p>
-        
-        <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', padding:'16px', background:'var(--bg-surface-hover)', borderRadius:'var(--radius-md)'}}>
-          <div>
-            <h4 style={{fontSize:'1.05rem', fontWeight:'600', marginBottom:'4px'}}>Gooner Mode 🔞</h4>
-            <p style={{fontSize:'0.85rem', color:'var(--text-muted)'}}>Filters Discover to only show Mature/Erotica content. Hides Boys' Love & Girls' Love.</p>
-          </div>
-          <label className="toggle-switch" style={{position:'relative', display:'inline-block', width:'50px', height:'28px'}}>
-            <input type="checkbox" checked={!!settings.goonerMode} onChange={(e)=>handleSaveSettings('goonerMode', e.target.checked)} style={{opacity:0, width:0, height:0}}/>
-            <span className="slider" style={{position:'absolute', cursor:'pointer', top:0, left:0, right:0, bottom:0, backgroundColor:settings.goonerMode?'var(--accent-primary)':'var(--border-color)', transition:'.4s', borderRadius:'34px'}}>
-              <span style={{position:'absolute', content:'""', height:'20px', width:'20px', left:'4px', bottom:'4px', backgroundColor:'white', transition:'.4s', borderRadius:'50%', transform:settings.goonerMode?'translateX(22px)':'none'}}></span>
-            </span>
-          </label>
-        </div>
-      </div>
     </div>
   );
 

@@ -46,7 +46,7 @@ export async function getSettings() {
     const { value } = await Preferences.get({ key: 'mangax_settings' });
     if (value) return JSON.parse(value);
   } catch (e) { console.error('Settings load error:', e); }
-  return { downloadPath: 'Download/MangaX', quality: 'dataSaver', goonerMode: false }; // Defaulting to dataSaver for mobile efficiency
+  return { downloadPath: 'Download/MangaX', quality: 'dataSaver' }; // Defaulting to dataSaver for mobile efficiency
 }
 
 export async function saveSettings(settings) {
@@ -93,39 +93,49 @@ export async function isInLibrary(mangaId) {
 // ──────────────────────────────────────────
 export async function fetchMangaList(options = {}) {
   try {
+    // Always exclude Boys' Love and Girls' Love
+    const tags = await getAllTags();
+    const excludedTagIds = [];
+    const blTag = tags.find(t => t.name === "Boys' Love");
+    const glTag = tags.find(t => t.name === "Girls' Love");
+    if (blTag) excludedTagIds.push(blTag.id);
+    if (glTag) excludedTagIds.push(glTag.id);
+
     const params = {
       limit: '30',
       'includes[]': ['cover_art', 'author'],
-      'contentRating[]': ['safe', 'suggestive'],
     };
+
+    // Content rating based on options.contentRatings
+    if (options.contentRatings && options.contentRatings.length > 0) {
+      params['contentRating[]'] = options.contentRatings;
+    } else {
+      params['contentRating[]'] = ['safe', 'suggestive'];
+    }
+
     if (options.query) params.title = options.query;
     else params['order[followedCount]'] = 'desc';
 
     if (options.hasAvailableChapters !== false) params.hasAvailableChapters = 'true';
     if (options.status) params['status[]'] = options.status;
     if (options.demographic) params['publicationDemographic[]'] = options.demographic;
+    if (options.originalLanguage) params['originalLanguage[]'] = options.originalLanguage;
     if (options.tags && options.tags.length > 0) params['includedTags[]'] = options.tags;
     if (options.offset) params.offset = String(options.offset);
-
-    if (options.goonerMode) {
-      params['contentRating[]'] = ['erotica', 'pornographic'];
-      const tags = await fetchTags();
-      const excludedTags = [];
-      const blTag = tags.find(t => t.name === "Boys' Love");
-      const glTag = tags.find(t => t.name === "Girls' Love");
-      if (blTag) excludedTags.push(blTag.id);
-      if (glTag) excludedTags.push(glTag.id);
-      if (excludedTags.length > 0) {
-        params['excludedTags[]'] = excludedTags;
-      }
-    }
+    if (excludedTagIds.length > 0) params['excludedTags[]'] = excludedTagIds;
 
     const url = buildUrl(BASE_URL, '/manga', params);
     const res = await apiFetch(url);
     const json = await res.json();
     if (!json.data) return [];
 
-    return json.data.map(manga => {
+    return json.data.filter(manga => {
+      const tags = manga.attributes.tags || [];
+      return !tags.some(t => {
+        const name = t.attributes.name.en || '';
+        return name === "Boys' Love" || name === "Girls' Love";
+      });
+    }).map(manga => {
       const coverArt = getRelationship(manga.relationships, 'cover_art');
       const author = getRelationship(manga.relationships, 'author');
 
@@ -154,19 +164,24 @@ export async function fetchMangaList(options = {}) {
   }
 }
 
-let cachedTags = null;
-export async function fetchTags() {
-  if (cachedTags) return cachedTags;
+let allTagsCache = null;
+export async function getAllTags() {
+  if (allTagsCache) return allTagsCache;
   try {
     const res = await apiFetch(`${BASE_URL}/manga/tag`);
     const json = await res.json();
     if (!json.data) return [];
-    cachedTags = json.data.map(t => ({ id: t.id, name: t.attributes.name.en, group: t.attributes.group }));
-    return cachedTags;
+    allTagsCache = json.data.map(t => ({ id: t.id, name: t.attributes.name.en, group: t.attributes.group }));
+    return allTagsCache;
   } catch (e) {
     console.error('Error fetching tags:', e);
     return [];
   }
+}
+
+export async function fetchTags() {
+  const tags = await getAllTags();
+  return tags.filter(t => t.name !== "Boys' Love" && t.name !== "Girls' Love");
 }
 
 export async function fetchMangaChapters(mangaId, onProgress) {
@@ -181,6 +196,7 @@ export async function fetchMangaChapters(mangaId, onProgress) {
         limit: String(LIMIT),
         offset: String(offset),
         'translatedLanguage[]': ['en', 'id'],
+        'contentRating[]': ['safe', 'suggestive', 'erotica', 'pornographic'],
         'order[chapter]': 'desc',
         'includes[]': ['scanlation_group'],
       });
