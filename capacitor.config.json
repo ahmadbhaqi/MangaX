@@ -1,0 +1,10 @@
+{
+  "appId": "com.ahmad.mangax",
+  "appName": "MangaX",
+  "webDir": "dist",
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}
