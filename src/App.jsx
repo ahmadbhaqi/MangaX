@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Search, Download, BookOpen, Settings, Library, Compass, Loader2, ArrowLeft, CheckCircle, AlertCircle, Heart, FolderOpen, ChevronLeft, ChevronRight, X, PlayCircle, Users, LayoutList, Layers, AlignLeft, RefreshCw, ShieldOff } from 'lucide-react'
+import { Search, Download, BookOpen, Settings, Library, Compass, Loader2, ArrowLeft, CheckCircle, AlertCircle, Heart, FolderOpen, ChevronLeft, ChevronRight, X, PlayCircle, Users, LayoutList, Layers, AlignLeft, RefreshCw } from 'lucide-react'
 import { App as CapacitorApp } from '@capacitor/app'
 import * as api from './services/mobileAPI'
 import './index.css'
@@ -33,6 +33,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [mangaList, setMangaList] = useState([])
   const [loading, setLoading] = useState(true)
+  const [listOffset, setListOffset] = useState(0)
   
   // Filter States
   const [filterDemo, setFilterDemo] = useState('')
@@ -52,9 +53,7 @@ export default function App() {
   const [expandedDl, setExpandedDl] = useState(null)
 
   // Settings & Reader
-  const [settings, setSettings] = useState({ downloadPath: '', quality: 'dataSaver', goonerMode: false })
-  // Refresh seed — random offset triggers fresh recommendations
-  const [refreshSeed, setRefreshSeed] = useState(0)
+  const [settings, setSettings] = useState({ downloadPath: '', quality: 'dataSaver' })
   const [readingChapter, setReadingChapter] = useState(null)
   const [readerPages, setReaderPages] = useState([])
   const [readerLoading, setReaderLoading] = useState(false)
@@ -98,27 +97,24 @@ export default function App() {
 
   // Fetch manga list with filters
   useEffect(() => {
+    setListOffset(0);
+  }, [searchQuery, filterDemo, filterStatus, selectedTags, settings.goonerMode]);
+
+  // Fetch manga list with filters
+  useEffect(() => {
     if (selectedManga) return;
     const get = async () => {
       setLoading(true);
       try {
-        const opts = {
-          query: searchQuery,
-          tags: selectedTags,
-          goonerMode: settings.goonerMode,
-          // Use refreshSeed as random offset (steps of 30) for variety
-          offset: !searchQuery && selectedTags.length === 0 && !filterDemo && !filterStatus
-            ? (refreshSeed % 17) * 30  // 0..480
-            : 0,
-        };
+        const opts = { query: searchQuery, tags: selectedTags, offset: listOffset, goonerMode: settings.goonerMode };
         if (filterDemo) opts.demographic = [filterDemo];
         if (filterStatus) opts.status = [filterStatus];
         setMangaList(await api.fetchMangaList(opts) || []);
       } catch(e) { setMangaList([]); }
       setLoading(false);
     };
-    const t = setTimeout(get, 300); return () => clearTimeout(t);
-  }, [searchQuery, filterDemo, filterStatus, selectedTags, selectedManga, settings.goonerMode, refreshSeed]);
+    const t = setTimeout(get, 500); return () => clearTimeout(t);
+  }, [searchQuery, filterDemo, filterStatus, selectedTags, selectedManga, listOffset, settings.goonerMode]);
 
   const handleSelectManga = useCallback(async (manga) => {
     setSelectedManga(manga); setLoadingChapters(true); setChapterFetchInfo(null); setLangFilter('en');
@@ -213,10 +209,6 @@ export default function App() {
     const newSet = { ...settings, [k]: v };
     setSettings(newSet);
     await api.saveSettings(newSet);
-  };
-
-  const handleRefreshDiscover = () => {
-    setRefreshSeed(prev => prev + 1);
   };
 
   // ─── RENDERS ───
@@ -411,24 +403,13 @@ export default function App() {
         )}
       </div>
       
-      <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'32px'}}>
-        <h2 style={{fontSize:'2rem', display:'flex', alignItems:'center', gap:'12px'}}>
-          {!searchQuery && selectedTags.length===0 && !filterDemo && !filterStatus ? '🔥 Trending Masterpieces' : '🔍 Exploration Results'}
-          {loading && <Loader2 size={28} color="var(--accent-primary)" style={{animation:'spin 1s linear infinite'}}/>}
-        </h2>
-        {/* Refresh button – shows only on the default (no filter) view */}
-        {!searchQuery && selectedTags.length===0 && !filterDemo && !filterStatus && (
-          <button
-            className="btn-refresh"
-            onClick={handleRefreshDiscover}
-            disabled={loading}
-            title="Get different recommendations"
-          >
-            <RefreshCw size={18} style={loading ? {animation:'spin 1s linear infinite'} : {}}/>
-            Refresh
-          </button>
-        )}
-      </div>
+      <h2 style={{marginBottom:'32px', fontSize:'2rem', display:'flex', alignItems:'center', gap:'12px'}}>
+        {!searchQuery && selectedTags.length===0 && !filterDemo && !filterStatus ? '🔥 Trending Masterpieces' : '🔍 Exploration Results'}
+        {loading && <Loader2 size={28} color="var(--accent-primary)" style={{animation:'spin 1s linear infinite'}}/>}
+        <button onClick={() => setListOffset(listOffset + 30)} className="btn-icon" style={{marginLeft:'auto', padding:'8px', display:'flex', alignItems:'center', justifyContent:'center'}}>
+          <RefreshCw size={24}/>
+        </button>
+      </h2>
       
       {loading && mangaList.length === 0 ? <div style={{display:'flex', justifyContent:'center', marginTop:'15vh'}}><Loader2 size={60} color="var(--accent-primary)" style={{animation:'spin 1s linear infinite'}}/></div> : (
         <div className="manga-grid">
@@ -439,15 +420,9 @@ export default function App() {
               <div className="manga-overlay">
                 <div className="manga-title">{m.title}</div>
                 <div className="manga-author">{m.author}</div>
-                {/* Genre preview chips on hover */}
-                {m.tags && m.tags.length > 0 && (
-                  <div className="manga-tags-preview">
-                    {m.tags.slice(0, 3).map(tag => (
-                      <span key={tag} className="manga-tag-chip">{tag}</span>
-                    ))}
-                    {m.tags.length > 3 && <span className="manga-tag-chip manga-tag-more">+{m.tags.length - 3}</span>}
-                  </div>
-                )}
+                <div className="manga-preview-tags" style={{fontSize: '0.75rem', color: 'rgba(255,255,255,0.7)', marginTop: '6px', display: '-webkit-box', WebkitLineClamp: '2', WebkitBoxOrient: 'vertical', overflow: 'hidden'}}>
+                  {(m.tags || []).join(', ')}
+                </div>
               </div>
             </div>
           ))}
@@ -551,34 +526,6 @@ export default function App() {
         <p style={{color:'var(--text-muted)', fontSize:'0.95rem', marginBottom:'20px'}}>Downloads are saved securely in your device's public Download folder under "Download/MangaX".</p>
       </div>
 
-      {/* ─── Gooner Mode ─── */}
-      <div className="settings-panel gooner-panel">
-        <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'16px'}}>
-          <div style={{display:'flex', alignItems:'center', gap:'14px'}}>
-            <div className={`gooner-icon ${settings.goonerMode ? 'active' : ''}`}>
-              <ShieldOff size={22}/>
-            </div>
-            <div>
-              <h3 className="settings-title" style={{marginBottom:'4px'}}>Gooner Mode</h3>
-              <p style={{color:'var(--text-muted)', fontSize:'0.9rem'}}>Filter out Boys' Love & Girls' Love genres from all results.</p>
-            </div>
-          </div>
-          <button
-            className={`toggle-switch ${settings.goonerMode ? 'on' : 'off'}`}
-            onClick={() => handleSaveSettings('goonerMode', !settings.goonerMode)}
-            aria-label="Toggle Gooner Mode"
-          >
-            <span className="toggle-knob"/>
-          </button>
-        </div>
-        <div className="gooner-tags-preview">
-          <span style={{fontSize:'0.8rem', color:'var(--text-subtle)', fontWeight:'600', marginRight:'8px'}}>Blacklisted:</span>
-          <span className="gooner-tag">Boys' Love</span>
-          <span className="gooner-tag">Girls' Love</span>
-          <span style={{fontSize:'0.75rem', color:'var(--text-subtle)', marginLeft:'4px'}}>{settings.goonerMode ? '🚫 Active' : '✓ Allowed'}</span>
-        </div>
-      </div>
-
       <div className="settings-panel">
         <h3 className="settings-title">Image Quality</h3>
         <p style={{color:'var(--text-muted)', fontSize:'0.95rem', marginBottom:'20px'}}>Select the source quality for downloads and the built-in reader.</p>
@@ -597,6 +544,24 @@ export default function App() {
               <h4>Data Saver (Compressed)</h4>
               <p>MangaDex's optimized web images. Significantly faster loading, lower bandwidth, and smaller PDF sizes with minimal quality loss.</p>
             </div>
+          </label>
+        </div>
+      </div>
+
+      <div className="settings-panel">
+        <h3 className="settings-title">Content Filters</h3>
+        <p style={{color:'var(--text-muted)', fontSize:'0.95rem', marginBottom:'20px'}}>Adjust the types of content shown in Discover.</p>
+        
+        <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', padding:'16px', background:'var(--bg-surface-hover)', borderRadius:'var(--radius-md)'}}>
+          <div>
+            <h4 style={{fontSize:'1.05rem', fontWeight:'600', marginBottom:'4px'}}>Gooner Mode 🔞</h4>
+            <p style={{fontSize:'0.85rem', color:'var(--text-muted)'}}>Filters Discover to only show Mature/Erotica content. Hides Boys' Love & Girls' Love.</p>
+          </div>
+          <label className="toggle-switch" style={{position:'relative', display:'inline-block', width:'50px', height:'28px'}}>
+            <input type="checkbox" checked={!!settings.goonerMode} onChange={(e)=>handleSaveSettings('goonerMode', e.target.checked)} style={{opacity:0, width:0, height:0}}/>
+            <span className="slider" style={{position:'absolute', cursor:'pointer', top:0, left:0, right:0, bottom:0, backgroundColor:settings.goonerMode?'var(--accent-primary)':'var(--border-color)', transition:'.4s', borderRadius:'34px'}}>
+              <span style={{position:'absolute', content:'""', height:'20px', width:'20px', left:'4px', bottom:'4px', backgroundColor:'white', transition:'.4s', borderRadius:'50%', transform:settings.goonerMode?'translateX(22px)':'none'}}></span>
+            </span>
           </label>
         </div>
       </div>

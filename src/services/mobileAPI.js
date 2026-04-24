@@ -46,14 +46,8 @@ export async function getSettings() {
     const { value } = await Preferences.get({ key: 'mangax_settings' });
     if (value) return JSON.parse(value);
   } catch (e) { console.error('Settings load error:', e); }
-  return { downloadPath: 'Download/MangaX', quality: 'dataSaver', goonerMode: false };
+  return { downloadPath: 'Download/MangaX', quality: 'dataSaver', goonerMode: false }; // Defaulting to dataSaver for mobile efficiency
 }
-
-// MangaDex tag IDs for Gooner Mode blacklist
-export const GOONER_BLACKLIST_TAG_IDS = [
-  '423e2eae-a7a2-4a8b-ac03-a8351462d71d', // Boys' Love
-  'a3c67850-4684-404e-9b7f-c69850ee5da6', // Girls' Love
-];
 
 export async function saveSettings(settings) {
   await Preferences.set({ key: 'mangax_settings', value: JSON.stringify(settings) });
@@ -104,26 +98,26 @@ export async function fetchMangaList(options = {}) {
       'includes[]': ['cover_art', 'author'],
       'contentRating[]': ['safe', 'suggestive'],
     };
-
-    if (options.query) {
-      params.title = options.query;
-    } else {
-      params['order[followedCount]'] = 'desc';
-      // Randomize offset for fresh recommendations on refresh
-      if (options.offset && options.offset > 0) {
-        params.offset = String(options.offset);
-      }
-    }
+    if (options.query) params.title = options.query;
+    else params['order[followedCount]'] = 'desc';
 
     if (options.hasAvailableChapters !== false) params.hasAvailableChapters = 'true';
     if (options.status) params['status[]'] = options.status;
     if (options.demographic) params['publicationDemographic[]'] = options.demographic;
     if (options.tags && options.tags.length > 0) params['includedTags[]'] = options.tags;
+    if (options.offset) params.offset = String(options.offset);
 
-    // Gooner Mode: blacklist Boys' Love and Girls' Love
     if (options.goonerMode) {
-      params['excludedTags[]'] = GOONER_BLACKLIST_TAG_IDS;
-      params['excludedTagsMode'] = 'OR';
+      params['contentRating[]'] = ['erotica', 'pornographic'];
+      const tags = await fetchTags();
+      const excludedTags = [];
+      const blTag = tags.find(t => t.name === "Boys' Love");
+      const glTag = tags.find(t => t.name === "Girls' Love");
+      if (blTag) excludedTags.push(blTag.id);
+      if (glTag) excludedTags.push(glTag.id);
+      if (excludedTags.length > 0) {
+        params['excludedTags[]'] = excludedTags;
+      }
     }
 
     const url = buildUrl(BASE_URL, '/manga', params);
@@ -151,8 +145,7 @@ export async function fetchMangaList(options = {}) {
         cover: coverUrl,
         status: manga.attributes.status || 'Unknown',
         description: manga.attributes.description?.en || '',
-        tags: manga.attributes.tags ? manga.attributes.tags.map(t => t.attributes.name.en) : [],
-        tagIds: manga.attributes.tags ? manga.attributes.tags.map(t => t.id) : [],
+        tags: manga.attributes.tags ? manga.attributes.tags.map(t => t.attributes.name.en) : []
       };
     });
   } catch (error) {
