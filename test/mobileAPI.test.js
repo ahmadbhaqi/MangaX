@@ -215,6 +215,43 @@ test('fetchMangaChapters surfaces terminal API errors to the interface', async (
   }
 })
 
+test('MangaDex requests identify MangaX instead of using an anonymous native client', async () => {
+  let requestHeaders
+
+  globalThis.fetch = async (_requestUrl, options = {}) => {
+    requestHeaders = options.headers
+    return jsonResponse({
+      data: [],
+      limit: 100,
+      offset: 0,
+      total: 0,
+    })
+  }
+
+  await api.fetchMangaChapters('manga-id')
+
+  assert.match(requestHeaders?.['User-Agent'] || '', /^MangaX\/1\.0 /)
+  assert.match(requestHeaders?.['User-Agent'] || '', /github\.com\/ahmadbhaqi\/MangaX/)
+})
+
+test('MangaDex request errors include the server detail needed to diagnose HTTP 400', async () => {
+  globalThis.fetch = async () => jsonResponse(
+    { errors: [{ title: 'Bad Request', detail: 'Missing or unsupported User-Agent' }] },
+    { status: 400 },
+  )
+
+  const originalConsoleError = console.error
+  console.error = () => {}
+  try {
+    await assert.rejects(
+      api.fetchMangaChapters('manga-id'),
+      /MangaDex request failed \(400\): Missing or unsupported User-Agent/,
+    )
+  } finally {
+    console.error = originalConsoleError
+  }
+})
+
 test('fetchMangaChapters aborts a request that exceeds its timeout', async () => {
   globalThis.fetch = async (_requestUrl, options = {}) => new Promise((resolve, reject) => {
     void resolve

@@ -1,0 +1,32 @@
+{
+  "App.jsx": {
+    "mtime": 1777040073.5385675,
+    "ast_hash": "2cd6c4c5cac5e410a71c44675afdf242",
+    "semantic_hash": "2cd6c4c5cac5e410a71c44675afdf242"
+  },
+  "main.jsx": {
+    "mtime": 1776936573.8294754,
+    "ast_hash": "e13723e2574429d9a6d849727e3ff695",
+    "semantic_hash": "e13723e2574429d9a6d849727e3ff695"
+  },
+  "services/mobileAPI.js": {
+    "mtime": 1777040360.4794476,
+    "ast_hash": "a2853879e9d7a9107cee306eea44afc6",
+    "semantic_hash": "a2853879e9d7a9107cee306eea44afc6"
+  },
+  "assets/hero.png": {
+    "mtime": 1776936573.8939188,
+    "ast_hash": "aead493361b27e7510691c5d7072dfc1",
+    "semantic_hash": "aead493361b27e7510691c5d7072dfc1"
+  },
+  "assets/react.svg": {
+    "mtime": 1776936574.3261297,
+    "ast_hash": "f0402b67b6ce880f65666bb49e841696",
+    "semantic_hash": "f0402b67b6ce880f65666bb49e841696"
+  },
+  "assets/vite.svg": {
+    "mtime": 1776936574.401276,
+    "ast_hash": "9960a24288958394ac50e57ff638b036",
+    "semantic_hash": "9960a24288958394ac50e57ff638b036"
+  }
+}

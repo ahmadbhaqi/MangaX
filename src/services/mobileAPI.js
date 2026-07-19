@@ -9,6 +9,7 @@ import { Capacitor } from '@capacitor/core';
 
 const BASE_URL = 'https://api.mangadex.org';
 const UPLOADS_URL = 'https://uploads.mangadex.org';
+const MANGADEX_USER_AGENT = 'MangaX/1.0 (Android; com.ahmad.mangax; +https://github.com/ahmadbhaqi/MangaX)';
 export const DOWNLOAD_ROOT = 'MangaX';
 export const DOWNLOAD_DIRECTORY = Directory.Documents;
 
@@ -49,6 +50,20 @@ function sanitizeFilename(name) {
   return name.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').toLowerCase();
 }
 
+async function getMangaDexErrorDetail(response) {
+  try {
+    const payload = await response.json();
+    const apiError = Array.isArray(payload?.errors) ? payload.errors[0] : null;
+    const detail = apiError?.detail || apiError?.title || payload?.message;
+    return typeof detail === 'string'
+      ? detail.replace(/\s+/g, ' ').trim().slice(0, 240)
+      : '';
+  } catch (error) {
+    void error;
+    return '';
+  }
+}
+
 async function apiFetch(url, { retries = 1, timeoutMs = 8000, baseDelayMs = 400 } = {}) {
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const controller = new AbortController();
@@ -57,7 +72,10 @@ async function apiFetch(url, { retries = 1, timeoutMs = 8000, baseDelayMs = 400 
 
     try {
       const request = fetch(url, {
-        headers: { Accept: 'application/json' },
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': MANGADEX_USER_AGENT,
+        },
         signal: controller.signal,
       });
       const deadline = new Promise((_, reject) => {
@@ -87,7 +105,10 @@ async function apiFetch(url, { retries = 1, timeoutMs = 8000, baseDelayMs = 400 
 
     const retryable = response.status === 429 || response.status >= 500;
     if (!retryable || attempt === retries) {
-      throw new Error(`MangaDex request failed (${response.status})`);
+      const detail = await getMangaDexErrorDetail(response);
+      throw new Error(
+        `MangaDex request failed (${response.status})${detail ? `: ${detail}` : ''}`,
+      );
     }
 
     const retryAfterHeader = response.headers?.get?.('retry-after');
