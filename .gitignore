@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Local Android release signing material (keep and back up securely)
+android/keystore.properties
+android/app/*.jks
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

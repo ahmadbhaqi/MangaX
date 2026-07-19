@@ -6,10 +6,25 @@
 import { Preferences } from '@capacitor/preferences';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
-import { PDFDocument } from 'pdf-lib';
 
 const BASE_URL = 'https://api.mangadex.org';
 const UPLOADS_URL = 'https://uploads.mangadex.org';
+export const DOWNLOAD_ROOT = 'MangaX';
+export const DOWNLOAD_DIRECTORY = Directory.Documents;
+
+export async function ensureDownloadPermission(
+  filesystem = Filesystem,
+  capacitor = Capacitor,
+) {
+  if (!capacitor.isNativePlatform()) return true;
+  const current = await filesystem.checkPermissions();
+  if (current.publicStorage === 'granted') return true;
+  const requested = await filesystem.requestPermissions();
+  if (requested.publicStorage !== 'granted') {
+    throw new Error('Izin penyimpanan diperlukan untuk menyimpan chapter.');
+  }
+  return true;
+}
 
 // ──────────────────────────────────────────
 // Helpers
@@ -34,8 +49,251 @@ function sanitizeFilename(name) {
   return name.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').toLowerCase();
 }
 
-async function apiFetch(url) {
-  return fetch(url, { headers: { 'User-Agent': 'Download/MangaXMobile/2.0' } });
+async function apiFetch(url, { retries = 1, timeoutMs = 8000, baseDelayMs = 400 } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    let timeout;
+    let response;
+
+    try {
+      const request = fetch(url, {
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      const deadline = new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          const error = new Error('MangaDex request timed out');
+          error.name = 'TimeoutError';
+          reject(error);
+        }, timeoutMs);
+      });
+
+      response = await Promise.race([request, deadline]);
+    } catch (error) {
+      if (attempt === retries) {
+        if (error?.name === 'AbortError' || error?.name === 'TimeoutError') {
+          throw new Error('MangaDex request timed out', { cause: error });
+        }
+        throw error;
+      }
+      await new Promise(resolve => setTimeout(resolve, baseDelayMs * (2 ** attempt)));
+      continue;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (response.ok) return response;
+
+    const retryable = response.status === 429 || response.status >= 500;
+    if (!retryable || attempt === retries) {
+      throw new Error(`MangaDex request failed (${response.status})`);
+    }
+
+    const retryAfterHeader = response.headers?.get?.('retry-after');
+    const retryAfter = retryAfterHeader?.trim() ? Number(retryAfterHeader) : Number.NaN;
+    const waitMs = Number.isFinite(retryAfter)
+      ? retryAfter * 1000
+      : baseDelayMs * (2 ** attempt);
+    if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
+
+  throw new Error('MangaDex request failed');
+}
+
+function createSeededRandom(seed) {
+  let state = (Number(seed) || 1) >>> 0;
+  return () => {
+    state = ((state * 1664525) + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+}
+
+function normalizedTags(manga) {
+  return new Set((manga.tags || []).filter(Boolean).map(tag => tag.toLowerCase()));
+}
+
+function tagSimilarity(left, right) {
+  if (left.size === 0 || right.size === 0) return 0;
+  let intersection = 0;
+  left.forEach(tag => {
+    if (right.has(tag)) intersection += 1;
+  });
+  return intersection / new Set([...left, ...right]).size;
+}
+
+export function selectDashboardRecommendations({
+  candidates = [],
+  library = [],
+  recentIds = [],
+  limit = 30,
+  seed = Date.now(),
+} = {}) {
+  const random = createSeededRandom(seed);
+  const recent = new Set(recentIds);
+  const tagAffinity = new Map();
+
+  library.forEach(manga => {
+    normalizedTags(manga).forEach(tag => {
+      tagAffinity.set(tag, (tagAffinity.get(tag) || 0) + 1);
+    });
+  });
+
+  const unique = [...new Map(candidates.map(manga => [manga.id, manga])).values()]
+    .filter(manga => manga?.id)
+    .map(manga => ({
+      manga,
+      tags: normalizedTags(manga),
+      exploration: random(),
+    }));
+
+  const unseen = unique.filter(item => !recent.has(item.manga.id));
+  const pool = unseen.length >= Math.min(limit, unique.length) ? unseen : unique;
+  const selected = [];
+  const remaining = [...pool];
+
+  while (selected.length < limit && remaining.length > 0) {
+    let bestIndex = 0;
+    let bestScore = -Infinity;
+
+    remaining.forEach((item, index) => {
+      const affinity = [...item.tags].reduce(
+        (score, tag) => score + (tagAffinity.get(tag) || 0),
+        0,
+      );
+      const maxSimilarity = selected.reduce(
+        (highest, picked) => Math.max(highest, tagSimilarity(item.tags, picked.tags)),
+        0,
+      );
+      const authorRepeated = selected.some(
+        picked => picked.manga.author && picked.manga.author === item.manga.author,
+      );
+      const novelty = recent.has(item.manga.id) ? -8 : 3;
+      const score = (affinity * 2.4)
+        + novelty
+        + (item.exploration * 2.5)
+        - (maxSimilarity * 4)
+        - (authorRepeated ? 1.5 : 0);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    });
+
+    selected.push(remaining.splice(bestIndex, 1)[0]);
+  }
+
+  return selected.map(item => item.manga);
+}
+
+export async function getRecommendationHistory(storage = Preferences) {
+  try {
+    const { value } = await storage.get({ key: 'mangax_recommendation_history' });
+    const parsed = value ? JSON.parse(value) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    void error;
+    return [];
+  }
+}
+
+export async function fetchDashboardRecommendations({
+  library = [],
+  recentIds,
+  limit = 30,
+  seed = Date.now(),
+} = {}) {
+  let history = recentIds;
+  if (!Array.isArray(history)) {
+    history = await getRecommendationHistory();
+  }
+
+  const random = createSeededRandom(seed);
+  const availableTags = await getAllTags();
+  const savedTagFrequency = new Map();
+
+  library.forEach(manga => {
+    (manga.tags || []).forEach(tag => {
+      const normalized = tag?.toLowerCase();
+      if (normalized) savedTagFrequency.set(normalized, (savedTagFrequency.get(normalized) || 0) + 1);
+    });
+  });
+
+  const preferredTagIds = [...savedTagFrequency.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([name]) => availableTags.find(tag => tag.name?.toLowerCase() === name)?.id)
+    .filter(Boolean)
+    .slice(0, 2);
+
+  const poolLimit = Math.min(30, Math.max(12, Math.ceil(limit * 0.75)));
+  const strategies = [
+    {
+      orderBy: 'followedCount',
+      offset: Math.floor(random() * 360),
+      tags: preferredTagIds.slice(0, 1),
+      includedTagsMode: 'OR',
+    },
+    {
+      orderBy: 'latestUploadedChapter',
+      offset: Math.floor(random() * 180),
+    },
+    {
+      orderBy: 'createdAt',
+      offset: Math.floor(random() * 120),
+    },
+  ];
+
+  const settled = await Promise.allSettled(
+    strategies.map(strategy => fetchMangaList({
+      ...strategy,
+      availableTags,
+      limit: poolLimit,
+    })),
+  );
+  const candidates = settled.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+
+  if (candidates.length === 0) {
+    const firstError = settled.find(result => result.status === 'rejected');
+    if (firstError) throw firstError.reason;
+  }
+
+  const selected = selectDashboardRecommendations({
+    candidates,
+    library,
+    recentIds: history,
+    limit,
+    seed,
+  });
+  return selected;
+}
+
+export function updateRecommendationHistory(current = [], shown = [], maxItems = 90) {
+  return [...new Set([...shown, ...current])]
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+let recommendationHistoryWrite = Promise.resolve([]);
+export function recordShownRecommendations(shownIds = [], storage = Preferences) {
+  recommendationHistoryWrite = recommendationHistoryWrite
+    .catch(() => [])
+    .then(async () => {
+      const current = await getRecommendationHistory(storage);
+
+      const next = updateRecommendationHistory(current, shownIds);
+      try {
+        await storage.set({
+          key: 'mangax_recommendation_history',
+          value: JSON.stringify(next),
+        });
+      } catch (error) {
+        void error;
+      }
+      return next;
+    });
+
+  return recommendationHistoryWrite;
 }
 
 // ──────────────────────────────────────────
@@ -46,7 +304,7 @@ export async function getSettings() {
     const { value } = await Preferences.get({ key: 'mangax_settings' });
     if (value) return JSON.parse(value);
   } catch (e) { console.error('Settings load error:', e); }
-  return { downloadPath: 'Download/MangaX', quality: 'dataSaver' }; // Defaulting to dataSaver for mobile efficiency
+  return { downloadPath: 'Documents/MangaX', quality: 'dataSaver' }; // Defaulting to dataSaver for mobile efficiency
 }
 
 export async function saveSettings(settings) {
@@ -94,7 +352,7 @@ export async function isInLibrary(mangaId) {
 export async function fetchMangaList(options = {}) {
   try {
     // Always exclude Boys' Love and Girls' Love
-    const tags = await getAllTags();
+    const tags = Array.isArray(options.availableTags) ? options.availableTags : await getAllTags();
     const excludedTagIds = [];
     const blTag = tags.find(t => t.name === "Boys' Love");
     const glTag = tags.find(t => t.name === "Girls' Love");
@@ -102,7 +360,7 @@ export async function fetchMangaList(options = {}) {
     if (glTag) excludedTagIds.push(glTag.id);
 
     const params = {
-      limit: '30',
+      limit: String(Math.min(100, Math.max(1, options.limit || 30))),
       'includes[]': ['cover_art', 'author'],
     };
 
@@ -114,18 +372,19 @@ export async function fetchMangaList(options = {}) {
     }
 
     if (options.query) params.title = options.query;
-    else params['order[followedCount]'] = 'desc';
+    else params[`order[${options.orderBy || 'followedCount'}]`] = options.orderDirection || 'desc';
 
     if (options.hasAvailableChapters !== false) params.hasAvailableChapters = 'true';
     if (options.status) params['status[]'] = options.status;
     if (options.demographic) params['publicationDemographic[]'] = options.demographic;
     if (options.originalLanguage) params['originalLanguage[]'] = options.originalLanguage;
     if (options.tags && options.tags.length > 0) params['includedTags[]'] = options.tags;
+    if (options.includedTagsMode) params.includedTagsMode = options.includedTagsMode;
     if (options.offset) params.offset = String(options.offset);
     if (excludedTagIds.length > 0) params['excludedTags[]'] = excludedTagIds;
 
     const url = buildUrl(BASE_URL, '/manga', params);
-    const res = await apiFetch(url);
+    const res = await apiFetch(url, { retries: 0 });
     const json = await res.json();
     if (!json.data) return [];
 
@@ -160,7 +419,7 @@ export async function fetchMangaList(options = {}) {
     });
   } catch (error) {
     console.error('Error fetching manga list:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -168,7 +427,7 @@ let allTagsCache = null;
 export async function getAllTags() {
   if (allTagsCache) return allTagsCache;
   try {
-    const res = await apiFetch(`${BASE_URL}/manga/tag`);
+    const res = await apiFetch(`${BASE_URL}/manga/tag`, { retries: 0, timeoutMs: 4000 });
     const json = await res.json();
     if (!json.data) return [];
     allTagsCache = json.data.map(t => ({ id: t.id, name: t.attributes.name.en, group: t.attributes.group }));
@@ -184,28 +443,32 @@ export async function fetchTags() {
   return tags.filter(t => t.name !== "Boys' Love" && t.name !== "Girls' Love");
 }
 
-export async function fetchMangaChapters(mangaId, onProgress) {
+export async function fetchMangaChapters(mangaId, onProgress, requestOptions = {}) {
   try {
-    const LIMIT = 500;
+    const LIMIT = 100;
     let offset = 0;
     let allChapters = [];
+    const seenChapterIds = new Set();
     let total = Infinity;
 
     while (offset < total) {
       const url = buildUrl(BASE_URL, `/manga/${mangaId}/feed`, {
         limit: String(LIMIT),
         offset: String(offset),
-        'translatedLanguage[]': ['en', 'id'],
         'contentRating[]': ['safe', 'suggestive', 'erotica', 'pornographic'],
         'order[chapter]': 'desc',
         'includes[]': ['scanlation_group'],
       });
 
-      const res = await apiFetch(url);
+      const res = await apiFetch(url, {
+        retries: requestOptions.retries,
+        timeoutMs: requestOptions.requestTimeoutMs,
+        baseDelayMs: requestOptions.retryDelayMs,
+      });
       const json = await res.json();
       if (!json.data) break;
 
-      total = json.total || json.data.length;
+      total = Number.isFinite(json.total) ? json.total : json.data.length;
 
       const mapped = json.data.map(chapter => {
         const group = getRelationship(chapter.relationships, 'scanlation_group');
@@ -220,8 +483,19 @@ export async function fetchMangaChapters(mangaId, onProgress) {
         };
       });
 
-      allChapters = allChapters.concat(mapped);
-      offset += LIMIT;
+      mapped.forEach(chapter => {
+        if (!seenChapterIds.has(chapter.id)) {
+          seenChapterIds.add(chapter.id);
+          allChapters.push(chapter);
+        }
+      });
+      const responseOffset = Number.isFinite(json.offset) ? json.offset : offset;
+      const responseLimit = Number.isFinite(json.limit) && json.limit > 0
+        ? json.limit
+        : (json.data.length || LIMIT);
+      const nextOffset = responseOffset + responseLimit;
+      if (json.data.length === 0 || nextOffset <= offset) break;
+      offset = nextOffset;
 
       if (onProgress) onProgress({ fetched: allChapters.length, total });
 
@@ -233,7 +507,7 @@ export async function fetchMangaChapters(mangaId, onProgress) {
     return allChapters;
   } catch (error) {
     console.error('Error fetching chapters:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -245,13 +519,16 @@ export async function fetchChapterPages({ chapterId, quality = 'dataSaver' }) {
 
     const baseUrl = json.baseUrl;
     const hash = json.chapter.hash;
-    const files = quality === 'dataSaver' ? json.chapter.dataSaver : json.chapter.data;
-    const folder = quality === 'dataSaver' ? 'data-saver' : 'data';
+    const saverFiles = Array.isArray(json.chapter.dataSaver) ? json.chapter.dataSaver : [];
+    const originalFiles = Array.isArray(json.chapter.data) ? json.chapter.data : [];
+    const useDataSaver = quality === 'dataSaver' && saverFiles.length > 0;
+    const files = useDataSaver ? saverFiles : originalFiles;
+    const folder = useDataSaver ? 'data-saver' : 'data';
 
     return files.map(f => `${baseUrl}/${folder}/${hash}/${f}`);
   } catch (error) {
     console.error('Error fetching chapter pages:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -260,14 +537,18 @@ export async function fetchChapterPages({ chapterId, quality = 'dataSaver' }) {
 // ──────────────────────────────────────────
 export async function downloadChapter({ mangaTitle, chapterTitle, pages }, onProgress) {
   try {
+    await ensureDownloadPermission();
+    const { PDFDocument } = await import('pdf-lib');
     const mangaDir = sanitizeFilename(mangaTitle);
     const pdfName = `${sanitizeFilename(chapterTitle)}.pdf`;
     
     // Create hidden directory for native offline reading
-    const hiddenDir = `Download/MangaX/${mangaDir}/.${sanitizeFilename(chapterTitle)}_images`;
+    const hiddenDir = `${DOWNLOAD_ROOT}/${mangaDir}/.${sanitizeFilename(chapterTitle)}_images`;
     try {
-      await Filesystem.mkdir({ path: hiddenDir, directory: Directory.ExternalStorage, recursive: true });
-    } catch(e) {}
+      await Filesystem.mkdir({ path: hiddenDir, directory: DOWNLOAD_DIRECTORY, recursive: true });
+    } catch (error) {
+      void error;
+    }
 
     // Build PDF iteratively to save RAM
     const pdfDoc = await PDFDocument.create();
@@ -309,7 +590,7 @@ export async function downloadChapter({ mangaTitle, chapterTitle, pages }, onPro
           await Filesystem.writeFile({
             path: `${hiddenDir}/${i + j}.jpg`,
             data: btoa(imgBinary),
-            directory: Directory.ExternalStorage
+            directory: DOWNLOAD_DIRECTORY
           });
         } catch(e) { console.error('Failed saving hidden image', e); }
 
@@ -350,19 +631,21 @@ export async function downloadChapter({ mangaTitle, chapterTitle, pages }, onPro
     // Ensure directory exists and write file
     try {
       await Filesystem.mkdir({
-        path: `Download/MangaX/${mangaDir}`,
-        directory: Directory.ExternalStorage,
+        path: `${DOWNLOAD_ROOT}/${mangaDir}`,
+        directory: DOWNLOAD_DIRECTORY,
         recursive: true,
       });
-    } catch (e) { /* directory may already exist */ }
+    } catch (error) {
+      void error;
+    }
 
     await Filesystem.writeFile({
-      path: `Download/MangaX/${mangaDir}/${pdfName}`,
+      path: `${DOWNLOAD_ROOT}/${mangaDir}/${pdfName}`,
       data: base64,
-      directory: Directory.ExternalStorage,
+      directory: DOWNLOAD_DIRECTORY,
     });
 
-    return { success: true, path: `Download/MangaX/${mangaDir}/${pdfName}` };
+    return { success: true, path: `${DOWNLOAD_ROOT}/${mangaDir}/${pdfName}` };
   } catch (error) {
     console.error('Download error:', error);
     return { success: false, error: error.message };
@@ -371,9 +654,10 @@ export async function downloadChapter({ mangaTitle, chapterTitle, pages }, onPro
 
 export async function getDownloads() {
   try {
+    await ensureDownloadPermission();
     const result = await Filesystem.readdir({
-      path: 'Download/MangaX',
-      directory: Directory.ExternalStorage,
+      path: DOWNLOAD_ROOT,
+      directory: DOWNLOAD_DIRECTORY,
     });
 
     const downloads = [];
@@ -381,27 +665,29 @@ export async function getDownloads() {
       if (entry.type === 'directory') {
         try {
           const chaptersResult = await Filesystem.readdir({
-            path: `Download/MangaX/${entry.name}`,
-            directory: Directory.ExternalStorage,
+            path: `${DOWNLOAD_ROOT}/${entry.name}`,
+            directory: DOWNLOAD_DIRECTORY,
           });
 
           const chapters = chaptersResult.files
             .filter(f => f.name.endsWith('.pdf'))
             .map(f => ({
               name: f.name.replace('.pdf', ''),
-              path: `Download/MangaX/${entry.name}/${f.name}`,
+              path: `${DOWNLOAD_ROOT}/${entry.name}/${f.name}`,
               size: f.size || 0,
             }));
 
           if (chapters.length > 0) {
             downloads.push({
               name: entry.name,
-              path: `Download/MangaX/${entry.name}`,
+              path: `${DOWNLOAD_ROOT}/${entry.name}`,
               chapters,
               totalSize: chapters.reduce((sum, c) => sum + (c.size || 0), 0),
             });
           }
-        } catch (e) { /* skip unreadable dirs */ }
+        } catch (error) {
+          void error;
+        }
       }
     }
     return downloads;
@@ -413,12 +699,13 @@ export async function getDownloads() {
 
 export async function getOfflinePages(mangaTitle, chapterTitle) {
   try {
+    await ensureDownloadPermission();
     const mangaDir = sanitizeFilename(mangaTitle);
-    const hiddenDir = `Download/MangaX/${mangaDir}/.${sanitizeFilename(chapterTitle)}_images`;
+    const hiddenDir = `${DOWNLOAD_ROOT}/${mangaDir}/.${sanitizeFilename(chapterTitle)}_images`;
     
     const result = await Filesystem.readdir({
       path: hiddenDir,
-      directory: Directory.ExternalStorage
+      directory: DOWNLOAD_DIRECTORY
     });
 
     const files = result.files
@@ -429,7 +716,7 @@ export async function getOfflinePages(mangaTitle, chapterTitle) {
     for (const f of files) {
       const uri = await Filesystem.getUri({
         path: `${hiddenDir}/${f.name}`,
-        directory: Directory.ExternalStorage
+        directory: DOWNLOAD_DIRECTORY
       });
       pages.push(Capacitor.convertFileSrc(uri.uri));
     }
@@ -442,9 +729,10 @@ export async function getOfflinePages(mangaTitle, chapterTitle) {
 
 export async function openFolder(filePath) {
   try {
+    await ensureDownloadPermission();
     const file = await Filesystem.readFile({
       path: filePath,
-      directory: Directory.ExternalStorage,
+      directory: DOWNLOAD_DIRECTORY,
     });
     const byteCharacters = atob(file.data);
     const byteNumbers = new Array(byteCharacters.length);

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">MangaX app icon</title>
+  <desc id="desc">An open cream manga book crossed by a vermilion X on a charcoal background.</desc>
+  <rect width="1024" height="1024" rx="224" fill="#171813"/>
+  <path d="M208 274c104 0 188 28 264 76v398c-76-38-160-66-264-66z" fill="#f3f0e7"/>
+  <path d="M816 274c-104 0-188 28-264 76v398c76-38 160-66 264-66z" fill="#f3f0e7"/>
+  <path d="m370 405 57-48 227 246-57 57z" fill="#d95b40"/>
+  <path d="m597 357 57 57-227 246-57-57z" fill="#d95b40"/>
+</svg>

@@ -5,7 +5,15 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores([
+    'dist/**',
+    'node_modules/**',
+    'android/**/build/**',
+    'android/app/src/main/assets/**',
+    'graphify-out/**',
+    'src/graphify-out/**',
+    '.codex-graphify-runtime/**',
+  ]),
   {
     files: ['**/*.{js,jsx}'],
     extends: [
